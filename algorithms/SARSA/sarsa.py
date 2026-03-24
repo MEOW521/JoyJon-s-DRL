@@ -43,10 +43,10 @@ class SARSA:
             states, actions, rewards, next_states, next_actions, dones = zip(*self.buffer)
             states = torch.FloatTensor(states).to(self.device)
             actions = torch.LongTensor(actions).unsqueeze(1).to(self.device)
-            rewards = torch.FloatTensor(rewards).to(self.device)
+            rewards = torch.FloatTensor(rewards).unsqueeze(1).to(self.device)
             next_states = torch.FloatTensor(next_states).to(self.device)
             next_actions = torch.LongTensor(next_actions).unsqueeze(1).to(self.device)
-            dones = torch.FloatTensor(dones).to(self.device)
+            dones = torch.FloatTensor(dones).unsqueeze(1).to(self.device)
 
             cur_q = self.q_net(states).gather(1, actions)
 
@@ -58,17 +58,14 @@ class SARSA:
             self.optimizer.zero_grad()
             loss.backward()
             self.optimizer.step()
-
             self.buffer.clear()
-
-            self.epsilon = max(self.epsilon * self.epsilon_decay, 0.01)
 
 
 def train():
     env = gym.make('CartPole-v1')
     agent = SARSA(env.observation_space.shape[0], env.action_space.n, buffer_size=32, lr=1e-3, gamma=0.99, epsilon=0.1)
 
-    for episode in range(10000):
+    for episode in range(100000):
         state, _ = env.reset()
         action = agent.select_action(state)
         rewards = []
@@ -84,6 +81,8 @@ def train():
             
             if done:
                 break
+        
+        agent.epsilon = max(agent.epsilon * agent.epsilon_decay, 0.01)
 
         if episode % 10 == 0:
             print(f'Episode {episode}, Reward: {sum(rewards)}')
