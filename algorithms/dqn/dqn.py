@@ -28,10 +28,9 @@ class Q_net(nn.Module):
         self.fc = nn.Sequential(
             nn.Linear(state_dim, 128),
             nn.ReLU(),
-            nn.Linear(128, action_dim),
-            # nn.Linear(128, 64),
-            # nn.ReLU(),
-            # nn.Linear(64, action_dim),
+            nn.Linear(128, 64),
+            nn.ReLU(),
+            nn.Linear(64, action_dim),
         )
 
     def forward(self, state):
