@@ -40,38 +40,53 @@ class Actor_Critic_Net(nn.Module):
         return self.actor_fc(fc_out), self.critic_fc(fc_out)
 
 
-class A2C:
-    def __init__(self, input_shape, action_dim, lr=1e-4, gamma=0.99, gae_lambda=0.95, entropy_coef=0.001, value_coef=0.5):
+class PPO:
+    def __init__(
+        self, 
+        input_shape, 
+        action_dim, 
+        lr=1e-4, 
+        gamma=0.99, 
+        gae_lambda=0.95, 
+        K_epochs=10, 
+        epsilon_clip=0.2, 
+        value_coef=0.5, 
+        entropy_coef=0.001
+    ):
+
         self.lr = lr
         self.gamma = gamma
         self.gae_lambda = gae_lambda
-        self.entropy_coef = entropy_coef
+        self.K_epochs = K_epochs
+        self.epsilon_clip = epsilon_clip
         self.value_coef = value_coef
+        self.entropy_coef = entropy_coef
 
-
-        self.actor_critic_net = Actor_Critic_Net(input_shape, action_dim)
-        self.optimizer = torch.optim.Adam(self.actor_critic_net.parameters(), lr=lr)
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-        self.actor_critic_net.to(self.device)
+
+        self.actor_critic_net = Actor_Critic_Net(input_shape, action_dim).to(self.device)
+        self.optimizer = torch.optim.Adam(self.actor_critic_net.parameters(), lr=self.lr)
 
         self.log_probs = []
+        self.states = []
+        self.actions = []
         self.values = []
         self.rewards = []
         self.dones = []
-        self.entropies = []
-
 
     def select_action(self, state):
         state = torch.FloatTensor(state).unsqueeze(0).to(self.device)
-        action_probs, values = self.actor_critic_net(state)
-        action_dist = Categorical(logits=action_probs.squeeze(0))
-        action = action_dist.sample()
-        log_prob = action_dist.log_prob(action)
+        with torch.no_grad():
+            action_probs, values = self.actor_critic_net(state)
+            action_dist = Categorical(logits=action_probs.squeeze(0))
+            action = action_dist.sample()
+            log_prob = action_dist.log_prob(action)
 
         self.log_probs.append(log_prob)
+        self.states.append(state)
+        self.actions.append(action)
         self.values.append(values)
-        self.entropies.append(action_dist.entropy())
-
+        
         return action.item()
 
     def store_transition(self, reward, done):
@@ -97,41 +112,54 @@ class A2C:
         adv = (adv - adv.mean()) / (adv.std() + 1e-8)
         return adv, returns
 
-
     def update(self, next_state, done):
         if done:
-            next_value = 0
+            next_values = 0
         else:
             next_state = torch.FloatTensor(next_state).unsqueeze(0).to(self.device)
             if next_state.shape[-1] == 4:
                 next_state = next_state.permute(0, 3, 1, 2)
             with torch.no_grad():
                 _, value = self.actor_critic_net(next_state)
-            next_value = value.item()
+            next_values = value.item()
+
+        adv, returns = self.calc_adv_gae(next_values)
         
-        adv, returns = self.calc_adv_gae(next_value)
+        adv_old = adv.detach()
 
-        log_probs = torch.stack(self.log_probs)
-        values = torch.cat(self.values).squeeze(-1)
-        entropies = torch.stack(self.entropies)
+        old_log_probs = torch.stack(self.log_probs).detach()
+        old_states = torch.cat(self.states).detach()
+        old_actions = torch.stack(self.actions).detach()
 
-        actor_loss = -(log_probs * adv).mean()
-        critic_loss = F.mse_loss(values, returns)
-        entropy_loss = -entropies.mean()
+        for _ in range(self.K_epochs):
+            new_action_probs, new_values = self.actor_critic_net(old_states)
+            new_action_dist = Categorical(logits=new_action_probs)
+            new_log_probs = new_action_dist.log_prob(old_actions)
 
-        total_loss = actor_loss + self.value_coef * critic_loss + self.entropy_coef * entropy_loss
+            entropy = new_action_dist.entropy()
 
-        self.optimizer.zero_grad()
-        total_loss.backward()
-        nn.utils.clip_grad_norm_(self.actor_critic_net.parameters(), max_norm=0.5)
-        self.optimizer.step()
+            ratio = torch.exp(new_log_probs - old_log_probs)
+            surr1 = ratio * adv_old
+            surr2 = torch.clamp(ratio, 1 - self.epsilon_clip, 1 + self.epsilon_clip) * adv_old
+            actor_loss = -torch.min(surr1, surr2).mean()
+
+            critic_loss = F.mse_loss(new_values.squeeze(-1), returns)
+
+            entropy_loss = -entropy.mean()
+
+            total_loss = actor_loss + self.value_coef * critic_loss + self.entropy_coef * entropy_loss
+
+            self.optimizer.zero_grad()
+            total_loss.backward()
+            nn.utils.clip_grad_norm_(self.actor_critic_net.parameters(), max_norm=0.5)
+            self.optimizer.step()
 
         self.log_probs.clear()
+        self.states.clear()
+        self.actions.clear()
         self.values.clear()
-        self.entropies.clear()
         self.rewards.clear()
         self.dones.clear()
-
 
 def make_atari_env(env_name):
     gym.register_envs(ale_py)
@@ -148,12 +176,11 @@ def make_atari_env(env_name):
     env = FrameStackObservation(env, 4)
     return env
 
-
 def train():
     env_name = "ALE/Pong-v5"
     env = make_atari_env(env_name)
     
-    agent = A2C(env.observation_space.shape, env.action_space.n)
+    agent = PPO(env.observation_space.shape, env.action_space.n)
 
     update_steps = 256
 
@@ -182,5 +209,8 @@ def train():
 if __name__ == "__main__":
     train()
         
+
+
+
 
 
